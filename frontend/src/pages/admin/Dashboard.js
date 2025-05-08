@@ -16,7 +16,40 @@ const Dashboard = () => {
         
         // Get system statistics
         const statsResponse = await api.analytics.getSystemStats();
-        setStats(statsResponse.data);
+        console.log('System stats response:', statsResponse.data);
+        
+        const apiData = statsResponse.data;
+        
+        // Map the backend data structure to the format expected by the frontend
+        const processedStats = {
+          // The backend returns nested objects with 'total' properties
+          total_users: apiData?.users?.total || 0,
+          total_restaurants: apiData?.restaurants?.total || 0,
+          total_bookings: apiData?.bookings?.total || 0,
+          average_rating: 0, // This might need to be calculated or fetched separately
+          
+          // Map nested objects to match frontend expectations
+          users_by_role: { 
+            customer: apiData?.users?.customers || 0, 
+            restaurant_manager: apiData?.users?.managers || 0 
+          },
+          
+          restaurants_by_status: { 
+            approved: apiData?.restaurants?.approved || 0, 
+            pending: apiData?.restaurants?.pending || 0 
+          },
+          
+          // Map booking status counts from the API response
+          bookings_by_status: { 
+            confirmed: apiData?.bookings?.confirmed || 0, 
+            completed: apiData?.bookings?.completed || 0, 
+            cancelled: apiData?.bookings?.cancelled || 0, 
+            no_show: apiData?.bookings?.no_show || 0 
+          }
+        };
+        
+        console.log('Processed stats:', processedStats);
+        setStats(processedStats);
         
         // Get restaurants pending approval
         const approvalsResponse = await api.admin.getRestaurantApprovals();
@@ -63,7 +96,7 @@ const Dashboard = () => {
       </p>
       
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-3 gap-6 mb-8">
         <div className="bg-white rounded-lg shadow-md p-6">
           <div className="flex justify-between items-start mb-2">
             <div>
@@ -133,23 +166,6 @@ const Dashboard = () => {
             <span className="text-red-500">
               No-shows: {stats?.bookings_by_status?.no_show || 0}
             </span>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex justify-between items-start mb-2">
-            <div>
-              <p className="text-sm font-medium text-gray-500 uppercase">Average Rating</p>
-              <h3 className="text-3xl font-bold">{stats?.average_rating?.toFixed(1) || 0}</h3>
-            </div>
-            <div className="bg-yellow-100 p-2 rounded-full">
-              <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-              </svg>
-            </div>
-          </div>
-          <div className="text-sm text-gray-500">
-            Based on {stats?.total_reviews || 0} reviews
           </div>
         </div>
       </div>

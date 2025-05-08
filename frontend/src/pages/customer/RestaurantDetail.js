@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import api from '../../api/api';
 import { useAuth } from '../../contexts/AuthContext';
+import RestaurantMap from '../../components/common/RestaurantMap';
 
 const RestaurantDetail = () => {
   const { id } = useParams();
@@ -191,9 +192,14 @@ const RestaurantDetail = () => {
                 {restaurant.photos.map(photo => (
                   <div key={photo.id} className="h-48 overflow-hidden rounded-lg">
                     <img 
-                      src={photo.image_url} 
+                      src={photo.image_path ? `${process.env.REACT_APP_API_URL}${photo.image_path}` : (photo.image || photo.image_url)} 
                       alt={photo.caption || restaurant.name} 
                       className="w-full h-full object-cover"
+                      onError={(e) => {
+                        console.log('Image failed to load:', e.target.src);
+                        e.target.onerror = null;
+                        e.target.src = 'https://via.placeholder.com/300x200?text=No+Image+Available';
+                      }}
                     />
                   </div>
                 ))}
@@ -205,6 +211,20 @@ const RestaurantDetail = () => {
           <div className="mb-8">
             <h2 className="text-xl font-semibold mb-4">About</h2>
             <p className="text-gray-700 whitespace-pre-line">{restaurant.description}</p>
+          </div>
+          
+          {/* Location Map */}
+          <div className="mb-8">
+            <h2 className="text-xl font-semibold mb-4">Location</h2>
+            <RestaurantMap 
+              address={restaurant.address}
+              city={restaurant.city}
+              state={restaurant.state}
+              zipCode={restaurant.zip_code}
+              name={restaurant.name}
+              latitude={restaurant.latitude}
+              longitude={restaurant.longitude}
+            />
           </div>
           
           {/* Reviews */}

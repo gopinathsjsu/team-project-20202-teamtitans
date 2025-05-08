@@ -1,12 +1,41 @@
-import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import axios from 'axios';
 
 const Header = () => {
   const { isAuthenticated, user, logout } = useAuth();
-  const navigate = useNavigate();
+
+  const location = useLocation();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+
+  // Close mobile menu when navigating
+  useEffect(() => {
+    setIsMenuOpen(false);
+  }, [location]);
+
+  // Close profile menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (isProfileMenuOpen && !event.target.closest('#user-menu-container')) {
+        setIsProfileMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isProfileMenuOpen]);
+  
+  // Ensure menu state is synchronized with authentication state
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setIsProfileMenuOpen(false);
+      setIsMenuOpen(false);
+    }
+  }, [isAuthenticated]);
 
   const toggleMenu = () => {
     setIsMenuOpen(!isMenuOpen);
@@ -16,10 +45,30 @@ const Header = () => {
     setIsProfileMenuOpen(!isProfileMenuOpen);
   };
 
-  const handleLogout = () => {
-    logout();
-    navigate('/');
+  const handleLogout = async (e) => {
+    e.preventDefault();
+    console.log('Logout triggered');
+    
+    // Close all menus
     setIsProfileMenuOpen(false);
+    setIsMenuOpen(false);
+    
+    try {
+      // Use the AuthContext logout function
+      await logout();
+    } catch (error) {
+      console.error('Logout failed:', error);
+      // Fallback logout mechanism
+      try {
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+        localStorage.removeItem('user');
+        delete axios.defaults.headers.common['Authorization'];
+        window.location.href = '/login';
+      } catch (fallbackError) {
+        console.error('Fallback logout failed:', fallbackError);
+      }
+    }
   };
 
   const getDashboardLink = () => {
@@ -66,6 +115,13 @@ const Header = () => {
                   >
                     My Bookings
                   </Link>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="border-transparent text-gray-500 hover:border-red-500 hover:text-red-600 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
+                  >
+                    Sign out
+                  </button>
                 </>
               )}
               {isAuthenticated && user?.role === 'restaurant_manager' && (
@@ -77,11 +133,18 @@ const Header = () => {
                     Dashboard
                   </Link>
                   <Link
-                    to="/restaurant/bookings"
+                    to="/restaurant/profile"
                     className="border-transparent text-gray-500 hover:border-red-500 hover:text-red-600 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
                   >
-                    Bookings
+                    Restaurant Profile
                   </Link>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="border-transparent text-gray-500 hover:border-red-500 hover:text-red-600 inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium"
+                  >
+                    Sign out
+                  </button>
                 </>
               )}
               {isAuthenticated && user?.role === 'admin' && (
@@ -98,6 +161,13 @@ const Header = () => {
                   >
                     Approvals
                   </Link>
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="block w-full text-left px-4 py-2 text-base font-medium text-gray-500 hover:text-gray-800 hover:bg-gray-100"
+                  >
+                    Sign out
+                  </button>
                 </>
               )}
             </nav>
@@ -118,10 +188,16 @@ const Header = () => {
                 >
                   Sign up
                 </Link>
+                <Link 
+                  to="/restaurant/signup" 
+                  className="text-gray-500 hover:text-red-600 px-3 py-2 rounded-md text-sm font-medium"
+                >
+                  For Restaurants
+                </Link>
               </div>
             ) : (
               <div className="ml-3 relative">
-                <div>
+                <div id="user-menu-container">
                   <button
                     onClick={toggleProfileMenu}
                     className="flex text-sm border-2 border-transparent rounded-full focus:outline-none focus:border-red-500"
@@ -156,9 +232,36 @@ const Header = () => {
                       Dashboard
                     </Link>
                     <button
-                      onClick={handleLogout}
+                      type="button"
                       className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                      role="menuitem"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        console.log('Dropdown Sign Out clicked');
+                        // Close the profile menu first
+                        setIsProfileMenuOpen(false);
+                        // Perform direct logout without using AuthContext
+                        try {
+                          // Clear auth data
+                          localStorage.removeItem('accessToken');
+                          localStorage.removeItem('refreshToken');
+                          localStorage.removeItem('user');
+                          
+                          // Clear authorization headers
+                          delete axios.defaults.headers.common['Authorization'];
+                          
+                          console.log('Cleared all local storage and headers');
+                          
+                          // Force navigation after clearing everything
+                          setTimeout(() => {
+                            console.log('Redirecting to login page');
+                            window.location.replace('/login');
+                          }, 100);
+                        } catch (error) {
+                          console.error('Direct logout failed:', error);
+                          // Last resort redirect
+                          window.location.replace('/login');
+                        }
+                      }}
                     >
                       Sign out
                     </button>
@@ -277,25 +380,28 @@ const Header = () => {
         
         <div className="pt-4 pb-3 border-t border-gray-200">
           {!isAuthenticated ? (
-            <div className="flex items-center px-4">
-              <div className="flex-shrink-0">
-                <Link 
-                  to="/login" 
-                  className="text-gray-500 hover:text-red-600 block px-3 py-2 rounded-md text-base font-medium"
-                  onClick={() => setIsMenuOpen(false)}
-                >
-                  Log in
-                </Link>
-              </div>
-              <div className="ml-3">
-                <Link 
-                  to="/signup" 
-                  className="bg-red-600 text-white block px-4 py-2 rounded-md text-base font-medium hover:bg-red-700"
-                  onClick={() => setIsMenuOpen(false)}
-                >
-                  Sign up
-                </Link>
-              </div>
+            <div className="space-y-2 px-4">
+              <Link 
+                to="/login" 
+                className="block text-gray-500 hover:text-red-600 px-3 py-2 rounded-md text-base font-medium"
+                onClick={() => setIsMenuOpen(false)}
+              >
+                Log in
+              </Link>
+              <Link 
+                to="/signup" 
+                className="block bg-red-600 text-white px-4 py-2 rounded-md text-base font-medium hover:bg-red-700"
+                onClick={() => setIsMenuOpen(false)}
+              >
+                Sign up
+              </Link>
+              <Link 
+                to="/restaurant/signup" 
+                className="block text-gray-500 hover:text-red-600 px-3 py-2 rounded-md text-base font-medium"
+                onClick={() => setIsMenuOpen(false)}
+              >
+                For Restaurants
+              </Link>
             </div>
           ) : (
             <>
@@ -318,12 +424,13 @@ const Header = () => {
                 >
                   Dashboard
                 </Link>
-                <button
-                  onClick={handleLogout}
+                <Link
+                  to="/logout"
                   className="block w-full text-left px-4 py-2 text-base font-medium text-gray-500 hover:text-gray-800 hover:bg-gray-100"
+                  onClick={() => setIsMenuOpen(false)}
                 >
                   Sign out
-                </button>
+                </Link>
               </div>
             </>
           )}

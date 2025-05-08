@@ -60,9 +60,11 @@ const Register = () => {
         first_name,
         last_name,
         password,
+        password2, // Include password2 for backend validation
         role: 'customer' // Force customer role for regular registration
       };
       
+      console.log('UserData in Register component before sending:', userData);
       const result = await register(userData);
       
       if (result) {

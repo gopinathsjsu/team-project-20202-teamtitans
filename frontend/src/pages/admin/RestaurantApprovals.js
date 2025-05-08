@@ -70,7 +70,9 @@ const RestaurantApprovals = () => {
     });
     
     try {
-      await api.admin.approveRestaurant(selectedRestaurant.id);
+      console.log('Approving restaurant with id:', selectedRestaurant.id);
+      // Pass the 'approved' status parameter required by the API
+      await api.admin.approveRestaurant(selectedRestaurant.id, 'approved');
       
       // Update local state
       setPendingRestaurants(prev => 
@@ -110,7 +112,9 @@ const RestaurantApprovals = () => {
     });
     
     try {
-      await api.admin.rejectRestaurant(selectedRestaurant.id);
+      console.log('Rejecting restaurant with id:', selectedRestaurant.id);
+      // Use approveRestaurant with 'rejected' status instead of rejectRestaurant
+      await api.admin.approveRestaurant(selectedRestaurant.id, 'rejected');
       
       // Update local state
       setPendingRestaurants(prev => 

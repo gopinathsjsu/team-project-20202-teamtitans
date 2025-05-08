@@ -1,8 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import api from '../../api/api';
+import { useAuth } from '../../contexts/AuthContext';
 
 const RestaurantSearch = () => {
+  const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
+  
   const [searchParams, setSearchParams] = useState({
     date: new Date().toISOString().split('T')[0], // Today's date as default
     time: '19:00', // 7:00 PM as default
@@ -12,8 +16,10 @@ const RestaurantSearch = () => {
   });
   
   const [restaurants, setRestaurants] = useState([]);
+  const [restaurantTimeSlots, setRestaurantTimeSlots] = useState({});
   const [cuisines, setCuisines] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingTimeSlots, setLoadingTimeSlots] = useState({});
   const [error, setError] = useState(null);
   
   // Fetch available cuisines on component mount
@@ -44,21 +50,140 @@ const RestaurantSearch = () => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setRestaurants([]); // Clear previous results
+    setRestaurantTimeSlots({}); // Clear previous time slots
+    
+    // Create a new object with transformed parameters for flexible search API
+    const searchQueryParams = {
+      date: searchParams.date,
+      time: searchParams.time,
+      party_size: searchParams.party_size,
+      location: searchParams.location, // Use the location input directly
+      cuisine: searchParams.cuisine
+    };
+    
+    console.log('Flexible search parameters:', searchQueryParams);
     
     try {
-      const response = await api.restaurants.getList(searchParams);
+      // Use the flexible search endpoint instead of the old one
+      const response = await api.restaurants.flexibleSearch(searchQueryParams);
+      console.log('Search results:', response.data);
       setRestaurants(response.data);
+      
+      // If no restaurants found, set loading to false and exit early
+      if (response.data.length === 0) {
+        console.log('No restaurants found');
+        setLoading(false);
+        return;
+      }
+      
+      // Now fetch available time slots for each restaurant
+      const newLoadingStates = {};
+      response.data.forEach(restaurant => {
+        newLoadingStates[restaurant.id] = true;
+      });
+      setLoadingTimeSlots(newLoadingStates);
+      
+      // Set a safety timeout to ensure loading state is reset even if something goes wrong
+      const safetyTimeout = setTimeout(() => {
+        if (loading) {
+          console.log('Safety timeout triggered - forcing loading state reset');
+          setLoading(false);
+        }
+      }, 10000); // 10 seconds safety timeout
+      
+      try {
+        // Fetch time slots for each restaurant in parallel
+        await Promise.all(response.data.map(async (restaurant) => {
+          try {
+            console.log(`Fetching time slots for restaurant ${restaurant.id}`);
+            const timeSlotsResponse = await api.restaurants.getAvailability(
+              restaurant.id, 
+              searchParams.date, 
+              searchParams.party_size
+            );
+            
+            setRestaurantTimeSlots(prev => ({
+              ...prev,
+              [restaurant.id]: timeSlotsResponse.data
+            }));
+          } catch (err) {
+            console.error(`Error fetching time slots for restaurant ${restaurant.id}:`, err);
+          } finally {
+            setLoadingTimeSlots(prev => ({
+              ...prev,
+              [restaurant.id]: false
+            }));
+          }
+        }));
+      } catch (timeSlotError) {
+        console.error('Error fetching time slots:', timeSlotError);
+      }
+      
+      // Clear the safety timeout since we've completed normally
+      clearTimeout(safetyTimeout);
     } catch (err) {
       console.error('Error searching restaurants:', err);
       setError('Failed to fetch restaurants. Please try again.');
     } finally {
+      // Ensure loading state is always reset, regardless of errors
+      console.log('Search completed, resetting loading state');
       setLoading(false);
     }
   };
   
+  // Safety effect to ensure loading state is eventually reset
+  useEffect(() => {
+    let safetyTimer;
+    if (loading) {
+      safetyTimer = setTimeout(() => {
+        console.log('Safety effect triggered - forcing loading state reset');
+        setLoading(false);
+      }, 15000); // 15 seconds maximum loading time
+    }
+    
+    return () => {
+      if (safetyTimer) clearTimeout(safetyTimer);
+    };
+  }, [loading]);
+  
   // Format currency display
   const formatCost = (costRating) => {
     return '$'.repeat(costRating);
+  };
+  
+  // Format time for display
+  const formatTime = (timeString) => {
+    const [hours, minutes] = timeString.split(':');
+    const hour = parseInt(hours, 10);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    const hour12 = hour % 12 || 12; // Convert 0 to 12 for 12 AM
+    return `${hour12}:${minutes} ${ampm}`;
+  };
+  
+  // Handle booking time selection
+  const handleSelectTime = (restaurantId, time) => {
+    if (!isAuthenticated) {
+      // Redirect to login with return URL
+      navigate(`/login?redirect=/customer/restaurant/${restaurantId}&date=${searchParams.date}&party_size=${searchParams.party_size}&time=${time}`);
+      return;
+    }
+    
+    // Navigate to booking confirmation page
+    const restaurant = restaurants.find(r => r.id === restaurantId);
+    const bookingData = {
+      restaurant_id: restaurantId,
+      date: searchParams.date,
+      time: time,
+      party_size: parseInt(searchParams.party_size),
+    };
+    
+    navigate('/customer/booking-confirmation/new', { 
+      state: { 
+        bookingData,
+        restaurantName: restaurant.name
+      } 
+    });
   };
   
   return (
@@ -133,7 +258,7 @@ const RestaurantSearch = () => {
             >
               <option value="">Any Cuisine</option>
               {cuisines.map(cuisine => (
-                <option key={cuisine.id} value={cuisine.id}>{cuisine.name}</option>
+                <option key={cuisine.id} value={cuisine.name}>{cuisine.name}</option>
               ))}
             </select>
           </div>
@@ -171,9 +296,17 @@ const RestaurantSearch = () => {
               <div key={restaurant.id} className="bg-white rounded-lg shadow-md overflow-hidden">
                 {restaurant.primary_photo ? (
                   <img 
-                    src={restaurant.primary_photo.image_url} 
-                    alt={restaurant.name} 
+                    src={restaurant.primary_photo.image_path ? 
+                        `${process.env.REACT_APP_API_URL}${restaurant.primary_photo.image_path}` : 
+                        (restaurant.primary_photo.image || '')
+                    }
+                    alt={restaurant.primary_photo.caption || restaurant.name} 
                     className="w-full h-48 object-cover"
+                    onError={(e) => {
+                      console.log('Image failed to load:', e.target.src);
+                      e.target.onerror = null;
+                      e.target.src = 'https://via.placeholder.com/300x200?text=No+Image+Available';
+                    }}
                   />
                 ) : (
                   <div className="w-full h-48 bg-gray-300 flex items-center justify-center">
@@ -205,7 +338,7 @@ const RestaurantSearch = () => {
                     ))}
                   </div>
                   
-                  <div className="flex justify-between items-center mb-4">
+                  <div className="flex justify-between items-center mb-2">
                     <span className="text-gray-700">
                       {formatCost(restaurant.cost_rating)}
                     </span>
@@ -214,11 +347,39 @@ const RestaurantSearch = () => {
                     </span>
                   </div>
                   
+                  {/* Available Time Slots */}
+                  <div className="mb-4">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">Available Times:</h4>
+                                        {loadingTimeSlots[restaurant.id] ? (
+                      <div className="flex justify-center">
+                        <div className="spinner-border text-red-600" role="status">
+                          <span className="sr-only">Loading time slots...</span>
+                        </div>
+                      </div>
+                    ) : restaurant.available_time_slots && restaurant.available_time_slots.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {restaurant.available_time_slots.map((slot, index) => (
+                          <button
+                            key={index}
+                            onClick={() => handleSelectTime(restaurant.id, slot.time)}
+                            className="bg-red-100 hover:bg-red-200 text-red-800 text-sm font-semibold py-1 px-3 rounded-full transition duration-300"
+                            title={`${slot.available_tables} ${slot.available_tables === 1 ? 'table' : 'tables'} available`}
+                          >
+                            {formatTime(slot.time)}
+                            <span className="ml-1 text-xs">({slot.available_tables})</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-gray-500 text-sm">No available times found</p>
+                    )}
+                  </div>
+                  
                   <Link 
                     to={`/customer/restaurant/${restaurant.id}`}
                     className="block w-full bg-red-600 hover:bg-red-700 text-white text-center font-bold py-2 px-4 rounded-md transition duration-300"
                   >
-                    View Available Times
+                    Restaurant Details
                   </Link>
                 </div>
               </div>
