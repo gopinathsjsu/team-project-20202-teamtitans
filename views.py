@@ -1,187 +1,264 @@
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.contrib.auth import get_user_model
-from django.shortcuts import get_object_or_404
+from django.db.models import Count, Avg
 from django.utils import timezone
-from django.db.models import Q
+from datetime import timedelta
+from dateutil.relativedelta import relativedelta
+from django.contrib.auth import get_user_model
 
-from .models import Booking
-from .serializers import BookingSerializer, BookingCreateSerializer
-from restaurants.models import Restaurant, Table
+from bookings.models import Booking
+from restaurants.models import Restaurant, Review
 
 User = get_user_model()
 
-class IsRestaurantManagerForBooking(permissions.BasePermission):
+class IsAdminUser(permissions.BasePermission):
     """
-    Custom permission for restaurant managers to access their restaurant's bookings
+    Custom permission for admin users
     """
-    def has_object_permission(self, request, view, obj):
-        return request.user.is_authenticated and (
-            request.user.role == User.RESTAURANT_MANAGER and 
-            obj.table.restaurant.manager == request.user
-        )
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.role == User.ADMIN
 
-class IsBookingOwner(permissions.BasePermission):
+class IsRestaurantManager(permissions.BasePermission):
     """
-    Custom permission for users to access only their own bookings
+    Custom permission for restaurant managers
     """
-    def has_object_permission(self, request, view, obj):
-        return request.user.is_authenticated and obj.user == request.user
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.role == User.RESTAURANT_MANAGER
 
-class BookingCreateView(generics.CreateAPIView):
+class BookingAnalyticsView(APIView):
     """
-    API endpoint to create a new booking
+    API endpoint to get booking analytics
     """
-    serializer_class = BookingCreateSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        booking = serializer.save()
-        
-        # Return the full booking details
-        response_serializer = BookingSerializer(booking)
-        headers = self.get_success_headers(response_serializer.data)
-        
-        # In a real app, we would send confirmation email or SMS here
-        # self.send_confirmation_email(booking)
-        # self.send_confirmation_sms(booking)
-        
-        return Response(
-            response_serializer.data, 
-            status=status.HTTP_201_CREATED, 
-            headers=headers
-        )
-
-class UserBookingsListView(generics.ListAPIView):
-    """
-    API endpoint to list bookings for the current user
-    """
-    serializer_class = BookingSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsAdminUser]
     
-    def get_queryset(self):
-        return Booking.objects.filter(user=self.request.user)
-
-class BookingDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    API endpoint to retrieve, update or cancel a booking
-    """
-    serializer_class = BookingSerializer
-    
-    def get_permissions(self):
-        if self.request.method in ['PUT', 'PATCH', 'DELETE']:
-            self.permission_classes = [permissions.IsAuthenticated, IsBookingOwner]
-        else:
-            self.permission_classes = [permissions.IsAuthenticated, 
-                                      permissions.OR(IsBookingOwner, IsRestaurantManagerForBooking)]
-        return super().get_permissions()
-    
-    def get_queryset(self):
-        user = self.request.user
-        
-        # Filter based on user role
-        if user.role == User.ADMIN:
-            # Admins can see all bookings
-            return Booking.objects.all()
-        elif user.role == User.RESTAURANT_MANAGER:
-            # Restaurant managers see bookings for their restaurants
-            return Booking.objects.filter(table__restaurant__manager=user)
-        else:
-            # Regular customers see only their own bookings
-            return Booking.objects.filter(user=user)
-    
-    def update(self, request, *args, **kwargs):
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
-        
-        # Only allow updating status to 'cancelled' for regular users
-        if request.user.role == User.CUSTOMER and 'status' in request.data:
-            if request.data['status'] != 'cancelled':
-                return Response(
-                    {"error": "You can only cancel a booking, not change its status to anything else."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
-        serializer.is_valid(raise_exception=True)
-        self.perform_update(serializer)
-        
-        return Response(serializer.data)
-
-class RestaurantBookingsView(generics.ListAPIView):
-    """
-    API endpoint to list bookings for a restaurant
-    """
-    serializer_class = BookingSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get_queryset(self):
-        user = self.request.user
-        restaurant_id = self.kwargs.get('restaurant_id')
-        
-        if user.role == User.ADMIN:
-            # Admins can see all bookings for any restaurant
-            return Booking.objects.filter(table__restaurant_id=restaurant_id)
-        elif user.role == User.RESTAURANT_MANAGER:
-            # Restaurant managers can only see bookings for their own restaurants
-            return Booking.objects.filter(
-                table__restaurant_id=restaurant_id,
-                table__restaurant__manager=user
-            )
-        else:
-            # Regular users can only see their own bookings for this restaurant
-            return Booking.objects.filter(
-                table__restaurant_id=restaurant_id,
-                user=user
-            )
-
-class CancelBookingView(APIView):
-    """
-    API endpoint to cancel a booking
-    """
-    permission_classes = [permissions.IsAuthenticated, IsBookingOwner]
-    
-    def patch(self, request, pk):
-        booking = get_object_or_404(Booking, pk=pk, user=request.user)
-        
-        if booking.status == 'cancelled':
-            return Response(
-                {"error": "This booking is already cancelled"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        booking.status = 'cancelled'
-        booking.save()
-        
-        serializer = BookingSerializer(booking)
-        return Response(serializer.data)
-
-class TodayBookingsView(generics.ListAPIView):
-    """
-    API endpoint to list bookings for today for restaurant managers
-    """
-    serializer_class = BookingSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get_queryset(self):
-        user = self.request.user
+    def get(self, request):
+        # Get last month bookings
         today = timezone.now().date()
+        last_month = today - relativedelta(months=1)
         
-        if user.role == User.ADMIN:
-            # Admins can see all bookings for today
-            return Booking.objects.filter(date=today)
-        elif user.role == User.RESTAURANT_MANAGER:
-            # Restaurant managers see bookings for their restaurants
-            return Booking.objects.filter(
-                date=today,
-                table__restaurant__manager=user
+        # Total bookings in the last month
+        bookings = Booking.objects.filter(date__gte=last_month, date__lte=today)
+        total_bookings = bookings.count()
+        confirmed_bookings = bookings.filter(status='confirmed').count()
+        cancelled_bookings = bookings.filter(status='cancelled').count()
+        completed_bookings = bookings.filter(status='completed').count()
+        no_show_bookings = bookings.filter(status='no_show').count()
+        
+        # Bookings by day of week
+        bookings_by_day = bookings.extra({
+            'day_of_week': "strftime('%w', date)"
+        }).values('day_of_week').annotate(count=Count('id'))
+        
+        days_map = {
+            '0': 'Sunday',
+            '1': 'Monday',
+            '2': 'Tuesday',
+            '3': 'Wednesday',
+            '4': 'Thursday',
+            '5': 'Friday',
+            '6': 'Saturday'
+        }
+        
+        bookings_by_day_formatted = [
+            {'day': days_map.get(item['day_of_week'], item['day_of_week']), 'count': item['count']}
+            for item in bookings_by_day
+        ]
+        
+        # Top restaurants by booking count
+        top_restaurants = bookings.values(
+            'table__restaurant__id', 
+            'table__restaurant__name'
+        ).annotate(
+            count=Count('id')
+        ).order_by('-count')[:10]
+        
+        # Average party size
+        avg_party_size = bookings.aggregate(avg=Avg('party_size'))['avg']
+        
+        # Daily bookings over the last month
+        daily_bookings = []
+        for i in range(30):
+            date = today - timedelta(days=i)
+            count = bookings.filter(date=date).count()
+            daily_bookings.append({
+                'date': date.strftime('%Y-%m-%d'),
+                'count': count
+            })
+        
+        data = {
+            'total_bookings': total_bookings,
+            'confirmed_bookings': confirmed_bookings,
+            'cancelled_bookings': cancelled_bookings,
+            'completed_bookings': completed_bookings,
+            'no_show_bookings': no_show_bookings,
+            'bookings_by_day': bookings_by_day_formatted,
+            'top_restaurants': top_restaurants,
+            'avg_party_size': avg_party_size,
+            'daily_bookings': daily_bookings
+        }
+        
+        return Response(data)
+
+class RestaurantAnalyticsView(APIView):
+    """
+    API endpoint to get analytics for a specific restaurant
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request, restaurant_id):
+        user = request.user
+        
+        try:
+            restaurant = Restaurant.objects.get(id=restaurant_id)
+        except Restaurant.DoesNotExist:
+            return Response(
+                {"error": "Restaurant not found"},
+                status=status.HTTP_404_NOT_FOUND
             )
-        else:
-            # Regular customers see only their own bookings for today
-            return Booking.objects.filter(
-                date=today,
-                user=user
+        
+        # Check permissions
+        if user.role != User.ADMIN and (user.role != User.RESTAURANT_MANAGER or restaurant.manager != user):
+            return Response(
+                {"error": "You don't have permission to view analytics for this restaurant"},
+                status=status.HTTP_403_FORBIDDEN
             )
+        
+        # Get last month bookings
+        today = timezone.now().date()
+        last_month = today - relativedelta(months=1)
+        
+        # Bookings for this restaurant
+        bookings = Booking.objects.filter(
+            table__restaurant=restaurant,
+            date__gte=last_month,
+            date__lte=today
+        )
+        
+        total_bookings = bookings.count()
+        confirmed_bookings = bookings.filter(status='confirmed').count()
+        cancelled_bookings = bookings.filter(status='cancelled').count()
+        completed_bookings = bookings.filter(status='completed').count()
+        no_show_bookings = bookings.filter(status='no_show').count()
+        
+        # Bookings by day of week
+        bookings_by_day = bookings.extra({
+            'day_of_week': "strftime('%w', date)"
+        }).values('day_of_week').annotate(count=Count('id'))
+        
+        days_map = {
+            '0': 'Sunday',
+            '1': 'Monday',
+            '2': 'Tuesday',
+            '3': 'Wednesday',
+            '4': 'Thursday',
+            '5': 'Friday',
+            '6': 'Saturday'
+        }
+        
+        bookings_by_day_formatted = [
+            {'day': days_map.get(item['day_of_week'], item['day_of_week']), 'count': item['count']}
+            for item in bookings_by_day
+        ]
+        
+        # Average party size
+        avg_party_size = bookings.aggregate(avg=Avg('party_size'))['avg']
+        
+        # Daily bookings over the last month
+        daily_bookings = []
+        for i in range(30):
+            date = today - timedelta(days=i)
+            count = bookings.filter(date=date).count()
+            daily_bookings.append({
+                'date': date.strftime('%Y-%m-%d'),
+                'count': count
+            })
+        
+        # Reviews analytics
+        reviews = Review.objects.filter(restaurant=restaurant)
+        total_reviews = reviews.count()
+        avg_rating = reviews.aggregate(avg=Avg('rating'))['avg'] or 0
+        
+        # Ratings distribution
+        ratings_distribution = {
+            '1': reviews.filter(rating=1).count(),
+            '2': reviews.filter(rating=2).count(),
+            '3': reviews.filter(rating=3).count(),
+            '4': reviews.filter(rating=4).count(),
+            '5': reviews.filter(rating=5).count(),
+        }
+        
+        data = {
+            'restaurant_name': restaurant.name,
+            'total_bookings': total_bookings,
+            'confirmed_bookings': confirmed_bookings,
+            'cancelled_bookings': cancelled_bookings,
+            'completed_bookings': completed_bookings,
+            'no_show_bookings': no_show_bookings,
+            'bookings_by_day': bookings_by_day_formatted,
+            'avg_party_size': avg_party_size,
+            'daily_bookings': daily_bookings,
+            'total_reviews': total_reviews,
+            'avg_rating': avg_rating,
+            'ratings_distribution': ratings_distribution
+        }
+        
+        return Response(data)
+
+class SystemStatsView(APIView):
+    """
+    API endpoint to get system-wide statistics (admin only)
+    """
+    permission_classes = [IsAdminUser]
+    
+    def get(self, request):
+        # Total counts
+        total_users = User.objects.count()
+        total_customers = User.objects.filter(role=User.CUSTOMER).count()
+        total_managers = User.objects.filter(role=User.RESTAURANT_MANAGER).count()
+        total_admins = User.objects.filter(role=User.ADMIN).count()
+        
+        total_restaurants = Restaurant.objects.count()
+        approved_restaurants = Restaurant.objects.filter(approval_status='approved').count()
+        pending_restaurants = Restaurant.objects.filter(approval_status='pending').count()
+        rejected_restaurants = Restaurant.objects.filter(approval_status='rejected').count()
+        
+        total_bookings = Booking.objects.count()
+        total_reviews = Review.objects.count()
+        
+        # New registrations in the last month
+        today = timezone.now().date()
+        last_month = today - relativedelta(months=1)
+        new_users_last_month = User.objects.filter(date_joined__gte=last_month).count()
+        
+        # New restaurants in the last month
+        new_restaurants_last_month = Restaurant.objects.filter(created_at__date__gte=last_month).count()
+        
+        # Bookings in the last month
+        bookings_last_month = Booking.objects.filter(date__gte=last_month).count()
+        
+        data = {
+            'users': {
+                'total': total_users,
+                'customers': total_customers,
+                'managers': total_managers,
+                'admins': total_admins,
+                'new_last_month': new_users_last_month
+            },
+            'restaurants': {
+                'total': total_restaurants,
+                'approved': approved_restaurants,
+                'pending': pending_restaurants,
+                'rejected': rejected_restaurants,
+                'new_last_month': new_restaurants_last_month
+            },
+            'bookings': {
+                'total': total_bookings,
+                'last_month': bookings_last_month
+            },
+            'reviews': {
+                'total': total_reviews
+            }
+        }
+        
+        return Response(data)
